@@ -12,34 +12,48 @@ app.set('trust proxy', 1);
 const RedisStore = connectRedis(session);
 
 const primary_endpoint = process.env.PRIMARY_ENDPOINT;
+if (!primary_endpoint) {
+  console.error("❌ PRIMARY_ENDPOINT environment variable is not set.");
+  process.exit(1);
+}
 
+// Create Redis client (legacy mode for connect-redis compatibility)
 const redisClient = redis.createClient({
-  host: primary_endpoint,
-  port: 6379
+  legacyMode: true,
+  socket: {
+    host: primary_endpoint,
+    port: 6379,
+    reconnectStrategy: retries => Math.min(retries * 50, 2000), // retry backoff
+  }
 });
 
-redisClient.on('error', function (err) {
-  console.log('Could not establish a connection with Redis. ' + err);
+redisClient.on('error', err => {
+  console.error('❌ Redis connection error:', err);
 });
 
-redisClient.on('connect', function (err) {
-  console.log('Connected to Redis successfully.');
+redisClient.on('connect', () => {
+  console.log('✅ Connected to Redis successfully.');
 });
 
+// Connect Redis client
+redisClient.connect().catch(console.error);
+
+// Configure session store
 app.use(session({
   store: new RedisStore({ client: redisClient }),
   secret: 'secret_educative_string',
   resave: false,
   saveUninitialized: false,
   cookie: {
-      secure: false,
-      httpOnly: false,
-      maxAge: 10000 * 60 * 10
+    secure: false,
+    httpOnly: false,
+    maxAge: 10000 * 60 * 10
   }
 }));
 
 const PORT = process.env.PORT || 3000;
 
+// Routes
 app.get('/', (req, res) => {
   let form = `
   <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #F3F3F3; font-family: Arial, sans-serif;">
@@ -60,16 +74,24 @@ app.get('/', (req, res) => {
 
 app.post('/set_custom_session', (req, res) => {
   req.session.customSession = req.body.customSession;
-  res.redirect('/');
-});
-
-app.get('/clear_custom_session', (req, res) => {
-  req.session.destroy(err => {
+  req.session.save(err => {
     if (err) {
-      return res.redirect('/');
+      console.error("Session save error:", err);
     }
     res.redirect('/');
   });
 });
 
-app.listen(PORT, () => console.log(`Server listening at port ${PORT}`));
+app.get('/clear_custom_session', (req, res) => {
+  req.session.destroy(err => {
+    if (err) {
+      console.error("Session destroy error:", err);
+    }
+    res.redirect('/');
+  });
+});
+
+// Start server after Redis is ready
+redisClient.on('ready', () => {
+  app.listen(PORT, () => console.log(`🚀 Server listening at port ${PORT}`));
+});
